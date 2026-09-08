@@ -697,14 +697,6 @@ class _MainNavigationHolderState extends State<MainNavigationHolder> {
     if (mounted) setState(() => _isSirenPlaying = false);
   }
 
-  void _toggleSiren() async {
-    if (_isSirenPlaying) {
-      await _stopSiren();
-    } else {
-      await _startSiren();
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -714,7 +706,8 @@ class _MainNavigationHolderState extends State<MainNavigationHolder> {
           HomeScreen(
             userPos: _userPos,
             isSirenPlaying: _isSirenPlaying,
-            onToggleSiren: _toggleSiren,
+            onStartSiren: _startSiren,
+            onStopSiren: _stopSiren,
             onRecenter: _determinePosition,
             onLogout: _logout,
           ),
@@ -761,7 +754,8 @@ class _MainNavigationHolderState extends State<MainNavigationHolder> {
 class HomeScreen extends StatefulWidget {
   final LatLng userPos;
   final bool isSirenPlaying;
-  final VoidCallback onToggleSiren;
+  final VoidCallback onStartSiren;
+  final VoidCallback onStopSiren;
   final Future<void> Function() onRecenter;
   final VoidCallback onLogout;
 
@@ -769,7 +763,8 @@ class HomeScreen extends StatefulWidget {
     super.key,
     required this.userPos,
     required this.isSirenPlaying,
-    required this.onToggleSiren,
+    required this.onStartSiren,
+    required this.onStopSiren,
     required this.onRecenter,
     required this.onLogout,
   });
@@ -838,6 +833,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // SOS button: sirf NDRF ko distress message bhejta hai (via BleMeshService.broadcastSOS,
+  // jo Supabase 'distress_alerts' table me insert karta hai). Yeh BLE siren/warning
+  // ko TRIGGER NAHI karta — woh sirf START SIREN button se hota hai.
   Future<void> _sendSOS() async {
     final prefs = await SharedPreferences.getInstance();
     final phone = prefs.getString('user_phone') ?? userPhone;
@@ -850,12 +848,6 @@ class _HomeScreenState extends State<HomeScreen> {
       message: 'CRITICAL EMERGENCY: User $name ($phone) requested immediate rescue.',
     );
 
-    try {
-      await BleService.sendAlert();
-    } catch (e) {
-      debugPrint("BLE broadcast exception: $e");
-    }
-
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -865,7 +857,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                'SOS Broadcasted for $name ($phone)',
+                'SOS sent to NDRF for $name ($phone)',
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),
             ),
@@ -1102,23 +1094,54 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   const SizedBox(height: 10),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 48,
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: widget.isSirenPlaying ? Colors.grey.shade900 : const Color(0xFFE65100),
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SizedBox(
+                          height: 48,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: widget.isSirenPlaying
+                                  ? const Color(0xFFE65100).withValues(alpha: 0.4)
+                                  : const Color(0xFFE65100),
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            icon: const Icon(Icons.campaign, size: 20),
+                            label: const Text(
+                              'START SIREN',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 0.3),
+                            ),
+                            // Start Siren: BLE ke through warning signal bhejta hai + local siren bajata hai.
+                            onPressed: widget.isSirenPlaying ? null : widget.onStartSiren,
+                          ),
+                        ),
                       ),
-                      icon: const Icon(Icons.campaign, size: 20),
-                      label: Text(
-                        widget.isSirenPlaying ? 'STOP SIREN' : 'TRIGGER MANUAL MESH SIREN',
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 0.5),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: SizedBox(
+                          height: 48,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: widget.isSirenPlaying
+                                  ? Colors.grey.shade900
+                                  : Colors.grey.shade400,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            icon: const Icon(Icons.stop_circle_outlined, size: 20),
+                            label: const Text(
+                              'STOP SIREN',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 0.3),
+                            ),
+                            // Stop Siren: local siren aur BLE alert dono band kar deta hai.
+                            onPressed: widget.isSirenPlaying ? widget.onStopSiren : null,
+                          ),
+                        ),
                       ),
-                      onPressed: widget.onToggleSiren,
-                    ),
+                    ],
                   ),
                   const SizedBox(height: 16),
                   const Text(
