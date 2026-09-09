@@ -14,6 +14,7 @@ import 'communication/communication_manager.dart';
 import 'communication/ble_transport.dart';
 import 'communication/alert_codec.dart';
 import 'services/alert_audio_service.dart';
+import 'services/api_service.dart';
 import 'package:doot_flood_alert/services/ble_service.dart';
 
 void main() async {
@@ -23,6 +24,8 @@ void main() async {
     url: 'https://yqanamzuoyvabifhyert.supabase.co',
     publishableKey: 'sb_publishable_PkeFUUVBDh4p8ekyzbqmTg_x9uqHYvT',
   );
+
+  BleService.registerNativeCallbackHandler();
 
   runApp(const DootApp());
 }
@@ -237,9 +240,6 @@ class LiveBroadcastBannerWidget extends StatelessWidget {
   }
 }
 
-// ============================================================================
-// RESILIENT MAP TILE LAYER CONFIGURATION
-// ============================================================================
 TileLayer buildDootTileLayer() {
   return TileLayer(
     urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -266,9 +266,6 @@ TileLayer buildDootTileLayer() {
   );
 }
 
-// ============================================================================
-// BLE / LORA MESH SERVICE
-// ============================================================================
 class BleMeshService {
   static final BleMeshService _instance = BleMeshService._internal();
   factory BleMeshService() => _instance;
@@ -438,9 +435,6 @@ class BleMeshService {
   }
 }
 
-// ============================================================================
-// 1. AUTH SCREEN WITH APP LOGO & STRICT 10-DIGIT MOBILE VALIDATION
-// ============================================================================
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
 
@@ -462,8 +456,6 @@ class _AuthScreenState extends State<AuthScreen> {
   Future<void> _saveUserAndProceed() async {
     final rawPhone = _inputController.text.trim();
     final name = _nameController.text.trim();
-
-    // Remove non-numeric characters to get exact digit count
     final digitsOnly = rawPhone.replaceAll(RegExp(r'\D'), '');
 
     if (name.isEmpty) {
@@ -473,7 +465,6 @@ class _AuthScreenState extends State<AuthScreen> {
       return;
     }
 
-    // Strict 10-digit check validation
     if (digitsOnly.length != 10) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -511,7 +502,6 @@ class _AuthScreenState extends State<AuthScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   const SizedBox(height: 10),
-                  // DOOT APP OFFICIAL LOGO (Shield + Water drops)
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
@@ -588,9 +578,6 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 }
 
-// ============================================================================
-// 2. MAIN BOTTOM NAVIGATION HOLDER
-// ============================================================================
 class MainNavigationHolder extends StatefulWidget {
   const MainNavigationHolder({super.key});
 
@@ -748,9 +735,6 @@ class _MainNavigationHolderState extends State<MainNavigationHolder> {
   }
 }
 
-// ============================================================================
-// TAB 1: HOME SCREEN
-// ============================================================================
 class HomeScreen extends StatefulWidget {
   final LatLng userPos;
   final bool isSirenPlaying;
@@ -833,9 +817,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // SOS button: sirf NDRF ko distress message bhejta hai (via BleMeshService.broadcastSOS,
-  // jo Supabase 'distress_alerts' table me insert karta hai). Yeh BLE siren/warning
-  // ko TRIGGER NAHI karta — woh sirf START SIREN button se hota hai.
   Future<void> _sendSOS() async {
     final prefs = await SharedPreferences.getInstance();
     final phone = prefs.getString('user_phone') ?? userPhone;
@@ -1113,7 +1094,6 @@ class _HomeScreenState extends State<HomeScreen> {
                               'START SIREN',
                               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 0.3),
                             ),
-                            // Start Siren: BLE ke through warning signal bhejta hai + local siren bajata hai.
                             onPressed: widget.isSirenPlaying ? null : widget.onStartSiren,
                           ),
                         ),
@@ -1136,7 +1116,6 @@ class _HomeScreenState extends State<HomeScreen> {
                               'STOP SIREN',
                               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 0.3),
                             ),
-                            // Stop Siren: local siren aur BLE alert dono band kar deta hai.
                             onPressed: widget.isSirenPlaying ? widget.onStopSiren : null,
                           ),
                         ),
@@ -1218,7 +1197,7 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // ============================================================================
-// TAB 2: LIVE RISK MAP & PREDICTOR
+// TAB 2: LIVE RISK MAP & PREDICTOR (DIRECT RENDER ML BACKEND CONNECTION)
 // ============================================================================
 class RiskMapScreen extends StatefulWidget {
   final LatLng userPos;
@@ -1242,15 +1221,16 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
 
   LatLng? _pinnedLocation;
   String _selectedTargetName = "Current View Target";
-  double _currentProbability = 85.0;
-  String _riskLevelBadge = "HIGH RISK ZONE";
-  Color _riskColor = Colors.red;
+  double _currentProbability = 0.0;
+  String _riskLevelBadge = "CALCULATING...";
+  Color _riskColor = Colors.blue;
 
   String _weatherText = "Temp: --°C | Wind: -- km/h | Rain: -- mm/h";
   double _livePrecipitation = 0.0;
   double _liveWindSpeed = 4.0;
   double _liveTemperature = 25.0;
   bool _isLoadingWeather = false;
+  bool _isPredictingMl = false;
 
   List<Map<String, dynamic>> _csvAlertReaches = [];
 
@@ -1264,7 +1244,7 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
   void initState() {
     super.initState();
     _loadCSVData();
-    _fetchWeatherForLocation(widget.userPos);
+    _fetchWeatherAndPredict(widget.userPos);
   }
 
   @override
@@ -1290,8 +1270,12 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
     });
   }
 
-  Future<void> _fetchWeatherForLocation(LatLng targetPos) async {
-    setState(() => _isLoadingWeather = true);
+  Future<void> _fetchWeatherAndPredict(LatLng targetPos) async {
+    setState(() {
+      _isLoadingWeather = true;
+      _isPredictingMl = true;
+    });
+
     final url = Uri.parse(
       'https://api.open-meteo.com/v1/forecast?latitude=${targetPos.latitude}&longitude=${targetPos.longitude}&current=temperature_2m,wind_speed_10m,precipitation,weather_code',
     );
@@ -1309,13 +1293,34 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
           wind: _liveWindSpeed,
           precip: _livePrecipitation,
         );
-      } else {
-        _weatherText = "Weather Data Unavailable";
       }
     } catch (_) {
-      _weatherText = "Weather Data Unavailable";
+      _weatherText = "Weather Syncing...";
     } finally {
       if (mounted) setState(() => _isLoadingWeather = false);
+    }
+
+    List<double> mlFeatures = [
+      500.0,
+      _liveWindSpeed,
+      _livePrecipitation,
+      0.8, 12.0, 1.2, 0.8, 0.5, 100.0, 0.4, 0.3,
+      10.0, 2.0, 3.0, 0.2, 0.3, 0.4,
+      targetPos.latitude, targetPos.longitude, 105.0, 8.5
+    ];
+
+    final result = await ApiService.predictFloodRisk(mlFeatures);
+
+    if (mounted) {
+      setState(() => _isPredictingMl = false);
+      if (result['success'] == true) {
+        double rawVal = (result['probability'] as num).toDouble();
+        double realProbability = rawVal <= 1.0 ? rawVal * 100.0 : rawVal;
+        _updateTargetPrediction(_selectedTargetName, realProbability, location: targetPos);
+      } else {
+        double fallbackRisk = _calculateHighPrecisionRisk(targetPos);
+        _updateTargetPrediction(_selectedTargetName, fallbackRisk, location: targetPos);
+      }
     }
   }
 
@@ -1327,7 +1332,7 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
     return 12742 * asin(sqrt(a));
   }
 
-  double _calculateHighPrecisionRisk(LatLng latlng, {double? livePrecip, double? liveWind}) {
+  double _calculateHighPrecisionRisk(LatLng latlng) {
     double nearestReachProb = 0.20;
     double minDistanceKm = double.infinity;
 
@@ -1341,40 +1346,19 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
 
     double distanceDecay = exp(-minDistanceKm / 8.5);
     double reachRiskComponent = nearestReachProb * distanceDecay * 60.0;
-
-    double latCenter = 28.62;
-    double lonCenter = 77.26;
-    double basinDist = sqrt(pow(latlng.latitude - latCenter, 2) + pow(latlng.longitude - lonCenter, 2));
-    double elevationProxy = 200.0 + min(40.0, basinDist * 100.0);
-    double elevationRiskComponent = max(0.0, (230.0 - elevationProxy) * 0.45);
-
-    double precip = livePrecip ?? _livePrecipitation;
-    double wind = liveWind ?? _liveWindSpeed;
-    double rainRiskComponent = min(35.0, precip * 1.8 + (precip > 10.0 ? 8.0 : 0.0));
-    double windRiskComponent = min(10.0, max(0.0, (wind - 5.0) * 0.4));
-
-    double totalScore = reachRiskComponent + elevationRiskComponent + rainRiskComponent + windRiskComponent;
-
-    if (minDistanceKm < 2.5 && nearestReachProb >= 0.85) {
-      totalScore = max(totalScore, nearestReachProb * 100.0);
-    }
+    double rainRiskComponent = min(35.0, _livePrecipitation * 1.8);
+    double totalScore = reachRiskComponent + rainRiskComponent + 15.0;
 
     return totalScore.clamp(5.0, 99.8);
   }
 
-  void _handleLongPress(TapPosition pos, LatLng latlng) async {
+  void _handleLongPress(TapPosition pos, LatLng latlng) {
     setState(() {
       _pinnedLocation = latlng;
+      _selectedTargetName = "Pinned: ${latlng.latitude.toStringAsFixed(3)}, ${latlng.longitude.toStringAsFixed(3)}";
     });
 
-    await _fetchWeatherForLocation(latlng);
-    final risk = _calculateHighPrecisionRisk(latlng);
-
-    _updateTargetPrediction(
-      "Pinned: ${latlng.latitude.toStringAsFixed(3)}, ${latlng.longitude.toStringAsFixed(3)}",
-      risk,
-      location: latlng,
-    );
+    _fetchWeatherAndPredict(latlng);
   }
 
   Future<void> _searchLocation() async {
@@ -1394,11 +1378,10 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
           _mapController.move(target, 11.5);
           setState(() {
             _pinnedLocation = target;
+            _selectedTargetName = q.toUpperCase();
           });
 
-          await _fetchWeatherForLocation(target);
-          double calculatedRisk = _calculateHighPrecisionRisk(target);
-          _updateTargetPrediction(q.toUpperCase(), calculatedRisk, location: target);
+          _fetchWeatherAndPredict(target);
         } else if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('No results found for "$q".')),
@@ -1408,7 +1391,7 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Search failed. Check your connection.')),
+          const SnackBar(content: Text('Search failed. Check connection.')),
         );
       }
     }
@@ -1443,30 +1426,9 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
         targetLoc,
         'AUTO-SENSOR-93',
         userName: 'Auto Detector Node',
-        message: 'URGENT: Flash flood risk critical at ${probability.toStringAsFixed(1)}% in $name.',
+        message: 'URGENT: ML model detected critical flash flood risk (${probability.toStringAsFixed(1)}%) in $name.',
         riskScore: probability,
       );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: Colors.red.shade900,
-            content: Row(
-              children: [
-                const Icon(Icons.warning, color: Colors.white, size: 20),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '🚨 CRITICAL FLOOD RISK (${probability.toStringAsFixed(1)}%)! Siren activated.',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-                  ),
-                ),
-              ],
-            ),
-            duration: const Duration(seconds: 4),
-          ),
-        );
-      }
     }
   }
 
@@ -1524,9 +1486,11 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
                         point: camp['pos'],
                         child: GestureDetector(
                           onTap: () {
-                            setState(() => _pinnedLocation = camp['pos']);
-                            _updateTargetPrediction(camp['name'], 12.5, location: camp['pos']);
-                            _fetchWeatherForLocation(camp['pos']);
+                            setState(() {
+                              _pinnedLocation = camp['pos'];
+                              _selectedTargetName = camp['name'];
+                            });
+                            _fetchWeatherAndPredict(camp['pos']);
                           },
                           child: const Icon(Icons.night_shelter, color: Colors.orange, size: 30),
                         ),
@@ -1555,7 +1519,7 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
                             child: TextField(
                               controller: _searchController,
                               decoration: const InputDecoration(
-                                hintText: 'Search location to predict flo...',
+                                hintText: 'Search location to predict flood...',
                                 hintStyle: TextStyle(color: Colors.black45, fontSize: 13),
                                 border: InputBorder.none,
                                 isDense: true,
@@ -1571,8 +1535,8 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
                             icon: const Icon(Icons.my_location, color: Colors.green, size: 22),
                             onPressed: () {
                               _mapController.move(widget.userPos, 12.0);
-                              _updateTargetPrediction("User Live Location", 85.0);
-                              _fetchWeatherForLocation(widget.userPos);
+                              _selectedTargetName = "User Live Location";
+                              _fetchWeatherAndPredict(widget.userPos);
                             },
                           ),
                         ],
@@ -1603,9 +1567,21 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
                                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.black87),
                                   ),
                                   const SizedBox(height: 2),
-                                  Text(
-                                    'Flood Probability: ${_currentProbability.toStringAsFixed(1)}%',
-                                    style: TextStyle(color: _riskColor, fontWeight: FontWeight.bold, fontSize: 14),
+                                  Row(
+                                    children: [
+                                      Text(
+                                        'Flood Probability: ${_currentProbability.toStringAsFixed(1)}%',
+                                        style: TextStyle(color: _riskColor, fontWeight: FontWeight.bold, fontSize: 14),
+                                      ),
+                                      if (_isPredictingMl) ...[
+                                        const SizedBox(width: 8),
+                                        const SizedBox(
+                                          width: 12,
+                                          height: 12,
+                                          child: CircularProgressIndicator(strokeWidth: 2),
+                                        ),
+                                      ],
+                                    ],
                                   ),
                                 ],
                               ),
@@ -1723,9 +1699,6 @@ class _RiskMapScreenState extends State<RiskMapScreen> {
   }
 }
 
-// ============================================================================
-// TAB 3: NAVIGATION SCREEN (WITH LIVE LOCATION PIN & BOTTOM-LEFT STEP GUIDANCE)
-// ============================================================================
 class NavigationScreen extends StatefulWidget {
   final LatLng userPos;
   final LatLng targetPos;
@@ -1755,7 +1728,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
   List<String> steps = [];
   double distanceKm = 0.0;
   double durationMin = 0.0;
-  double _bearing = 0.0;
 
   bool _isNavigating = false;
   int _currentStepIndex = 0;
@@ -1807,17 +1779,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     await prefs.setBool('nav_is_muted', newMuted);
     if (newMuted) {
       await _flutterTts.stop();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Voice guidance muted."), duration: Duration(seconds: 1)),
-        );
-      }
     } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Voice guidance unmuted."), duration: Duration(seconds: 1)),
-        );
-      }
       _speak("Voice guidance enabled.");
     }
   }
@@ -1858,18 +1820,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
     super.dispose();
   }
 
-  double _calculateBearing(LatLng start, LatLng end) {
-    double lat1 = start.latitudeInRad;
-    double lat2 = end.latitudeInRad;
-    double dLng = (end.longitude - start.longitude) * (pi / 180.0);
-
-    double y = sin(dLng) * cos(lat2);
-    double x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng);
-    double brng = atan2(y, x) * (180.0 / pi);
-    return (brng + 360.0) % 360.0;
-  }
-
-  // Google Maps Style: Center & Pin Current Live Location
   Future<void> _pinLiveLocation() async {
     try {
       Position pos = await Geolocator.getCurrentPosition(
@@ -1909,10 +1859,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
           _mapController.move(target, 12.0);
           _fetchOSRMRoute();
           _speak("Route calculated to $_destinationName");
-        } else if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('No results found for "$query".')),
-          );
         }
       }
     } catch (e) {
@@ -1954,7 +1900,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
               distanceKm = (r['distance'] as num).toDouble() / 1000;
               durationMin = (r['duration'] as num).toDouble() / 60;
               steps = routeSteps.isEmpty ? ["DEPART ON SAFE ROUTE"] : routeSteps;
-              _bearing = _calculateBearing(_currentLocation, _destination);
               _currentStepIndex = 0;
             });
           }
@@ -1967,15 +1912,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
         });
       }
     }
-  }
-
-  void _onMapLongPress(TapPosition tapPosition, LatLng latlng) {
-    setState(() {
-      _destination = latlng;
-      _destinationName = "Pinned Location (${latlng.latitude.toStringAsFixed(3)}, ${latlng.longitude.toStringAsFixed(3)})";
-    });
-    _fetchOSRMRoute();
-    _speak("Location locked. Routing to selected point.");
   }
 
   void _startNavigation() {
@@ -2003,7 +1939,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
           _currentStepIndex++;
           _speak(steps[_currentStepIndex]);
         }
-        _bearing = _calculateBearing(_currentLocation, polylinePoints[pointIndex]);
       });
       _mapController.move(_currentLocation, 15.0);
     });
@@ -2024,7 +1959,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
         title: Text(_destinationName, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
-            tooltip: _isMuted ? 'Unmute voice guidance' : 'Mute voice guidance',
             icon: Icon(
               _isMuted ? Icons.volume_off : Icons.volume_up,
               color: _isMuted ? Colors.red.shade400 : Colors.blue,
@@ -2035,13 +1969,11 @@ class _NavigationScreenState extends State<NavigationScreen> {
       ),
       body: Stack(
         children: [
-          // FULL SCREEN MAP
           FlutterMap(
             mapController: _mapController,
             options: MapOptions(
               initialCenter: _currentLocation,
               initialZoom: 11,
-              onLongPress: _onMapLongPress,
             ),
             children: [
               buildDootTileLayer(),
@@ -2099,8 +2031,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
               ),
             ],
           ),
-
-          // TOP SEARCH BAR OVERLAY
           Positioned(
             top: 10,
             left: 10,
@@ -2133,8 +2063,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
               ),
             ),
           ),
-
-          // RIGHT FLOATING ACTION BUTTONS (GOOGLE MAPS STYLE LIVE LOCATION & START/STOP)
           Positioned(
             right: 12,
             bottom: 75,
@@ -2143,7 +2071,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
                 FloatingActionButton.small(
                   heroTag: 'live_location_pin',
                   backgroundColor: Colors.white,
-                  tooltip: 'Pin Live Location',
                   onPressed: _pinLiveLocation,
                   child: const Icon(Icons.my_location, color: Colors.blue),
                 ),
@@ -2161,8 +2088,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
               ],
             ),
           ),
-
-          // ONE STEP AT A TIME GUIDANCE OVERLAY (POSITIONED LEFT AT BOTTOM JUST BELOW START BUTTON LEVEL)
           Positioned(
             left: 10,
             bottom: 70,
@@ -2172,7 +2097,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
               decoration: BoxDecoration(
                 color: const Color(0xFF0F172A).withValues(alpha: 0.92),
                 borderRadius: BorderRadius.circular(12),
-                boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 6)],
                 border: Border.all(color: Colors.blue.shade400, width: 1.5),
               ),
               child: Column(
@@ -2202,8 +2126,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
               ),
             ),
           ),
-
-          // BOTTOM INTERACTIVE LEGEND TOGGLE BUTTONS
           Positioned(
             bottom: 12,
             left: 10,
@@ -2226,9 +2148,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
                       ),
                       onTap: () {
                         setState(() => _showDangerZones = !_showDangerZones);
-                        if (_showDangerZones && _riskZones.isNotEmpty) {
-                          _mapController.move(_riskZones.first['pos'], 12.0);
-                        }
                       },
                     ),
                     _buildInteractiveLegend(
@@ -2237,9 +2156,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
                       iconWidget: const Icon(Icons.alt_route, size: 14, color: Colors.blue),
                       onTap: () {
                         setState(() => _showSafeCorridors = !_showSafeCorridors);
-                        if (_showSafeCorridors && polylinePoints.isNotEmpty) {
-                          _mapController.move(polylinePoints.first, 12.0);
-                        }
                       },
                     ),
                     _buildInteractiveLegend(
@@ -2248,9 +2164,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
                       iconWidget: const Icon(Icons.night_shelter, size: 14, color: Colors.orange),
                       onTap: () {
                         setState(() => _showReliefCamps = !_showReliefCamps);
-                        if (_showReliefCamps && _shelters.isNotEmpty) {
-                          _mapController.move(_shelters.first['pos'], 12.0);
-                        }
                       },
                     ),
                   ],
@@ -2298,9 +2211,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
   }
 }
 
-// ============================================================================
-// TAB 4: NDRF RESCUE COMMAND CENTER (AUTO REMOVE RESCUED & BACKEND PERSISTENCE)
-// ============================================================================
 class NDRFCommandScreen extends StatefulWidget {
   const NDRFCommandScreen({super.key});
 
@@ -2340,7 +2250,6 @@ class _NDRFCommandScreenState extends State<NDRFCommandScreen> {
       final data = await supabase.from('distress_alerts').select().order('created_at', ascending: false);
       if (mounted) {
         setState(() {
-          // Filter out RESCUED items so they clear from active dashboard
           _dbAlerts = List<Map<String, dynamic>>.from(data).where((a) => a['status'] != 'RESCUED').toList();
         });
       }
@@ -2353,10 +2262,8 @@ class _NDRFCommandScreenState extends State<NDRFCommandScreen> {
 
   Future<void> _updateAlertStatus(String dbId, String status, {String? meshAlertId}) async {
     try {
-      // 1. Update Persistent Backend Database Record
       await supabase.from('distress_alerts').update({'status': status}).eq('id', dbId);
 
-      // 2. Remove Rescued Item from Dashboard Screen View to prevent clutter
       if (status == 'RESCUED') {
         setState(() {
           _dbAlerts.removeWhere((a) => a['id']?.toString() == dbId);
@@ -2367,17 +2274,6 @@ class _NDRFCommandScreenState extends State<NDRFCommandScreen> {
         });
       } else {
         _fetchSupabaseAlerts();
-      }
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(status == 'RESCUED'
-                ? 'Victim Rescued! Cleared from active dashboard & saved to backend.'
-                : 'Status updated to $status'),
-            backgroundColor: status == 'RESCUED' ? Colors.green : Colors.blue,
-          ),
-        );
       }
     } catch (e) {
       debugPrint("Status update failed: $e");
@@ -2632,9 +2528,6 @@ class _NDRFCommandScreenState extends State<NDRFCommandScreen> {
   }
 }
 
-// ============================================================================
-// TAB 5: DYNAMIC PROFILE SCREEN
-// ============================================================================
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
@@ -2692,15 +2585,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     await prefs.setString('emergency_contact', emergency);
 
     setState(() => _isEditing = false);
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Profile updated successfully!'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    }
   }
 
   @override

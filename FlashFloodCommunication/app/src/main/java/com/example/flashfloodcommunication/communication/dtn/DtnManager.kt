@@ -57,6 +57,25 @@ class DtnManager(
             return null
         }
 
+        // SIREN_STOP is a transient control signal, not a flood alert: it must
+        // silence the local alarm (never re-trigger it) and must NOT be persisted
+        // to the DTN store as if it were a flood warning. It still relays onward
+        // so every mesh hop that heard the original siren also stops.
+        if (alert.eventType == "SIREN_STOP") {
+            seenAlertIds.add(alert.alertId)
+            Log.d(BLE_MESH_TAG, "Received SIREN_STOP for ${alert.alertId}, stopping local alarm")
+            try {
+                AlertNotifier.stopEmergencyAlarm()
+            } catch (e: Exception) {
+                Log.e(BLE_MESH_TAG, "Failed to stop local alarm: ${e.message}")
+            }
+            return if (alert.ttl > 1 && alert.hopCount + 1 < 3 && senderId != "LOCAL_SENDER") {
+                alert.copy(ttl = alert.ttl - 1, hopCount = alert.hopCount + 1)
+            } else {
+                null
+            }
+        }
+
         Log.d(BLE_MESH_TAG, "Alert ${alert.alertId} passed validation, attempting database insertion")
 
         // 4. Save locally in Room (returns false if duplicate or already stored)

@@ -45,6 +45,7 @@ object AlertCodec {
         val eventCode = when (alert.eventType) {
             "FLASH_FLOOD" -> 1
             "DAM_BURST" -> 2
+            "SIREN_STOP" -> 3
             else -> 0
         } and 0x0F
         val sevCode = alert.severity and 0x0F
@@ -87,6 +88,7 @@ object AlertCodec {
         val eventType = when (eventCode) {
             1 -> "FLASH_FLOOD"
             2 -> "DAM_BURST"
+            3 -> "SIREN_STOP"
             else -> "EMERGENCY"
         }
 
